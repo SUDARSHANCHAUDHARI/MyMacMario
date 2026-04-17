@@ -1,7 +1,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 
 hiddenimports = []
-for package_name in ("pystray", "pynput", "simpleaudio"):
+for package_name in ("pygame", "simpleaudio"):
     try:
         hiddenimports += collect_submodules(package_name)
     except Exception:

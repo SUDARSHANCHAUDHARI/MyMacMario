@@ -1,14 +1,10 @@
 import math
-import queue
 import random
 import threading
-import tkinter as tk
 from array import array
 from dataclasses import dataclass
 
-from PIL import Image, ImageDraw, ImageOps, ImageTk
-from pynput import keyboard
-import pystray
+import pygame
 
 try:
     import simpleaudio as sa
@@ -17,21 +13,16 @@ try:
 except Exception:
     HAS_AUDIO = False
 
-try:
-    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 
-    HAS_APPKIT = True
-except Exception:
-    HAS_APPKIT = False
-
-
-WORLD_WIDTH = 3300
-PLAYFIELD_HEIGHT = 360
-GROUND_Y = 260
-GRAVITY = 0.5
-MAX_FALL = 13.5
-PLAYER_W = 32
-PLAYER_H = 42
+WINDOW_W = 1280
+WINDOW_H = 420
+WORLD_WIDTH = 3400
+GROUND_Y = 300
+GRAVITY = 0.52
+MAX_FALL = 13
+PLAYER_W = 34
+PLAYER_H = 44
+FPS = 60
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -62,7 +53,7 @@ class Enemy:
     h: float
     left_bound: float
     right_bound: float
-    vx: float = -1.1
+    vx: float = -1.4
     alive: bool = True
     frame: float = 0.0
 
@@ -74,7 +65,7 @@ class Particle:
     vx: float
     vy: float
     ttl: int
-    color: str
+    color: tuple[int, int, int]
     size: int
 
 
@@ -83,9 +74,9 @@ class AudioEngine:
         self.enabled = HAS_AUDIO
         self.sample_rate = 22050
         self.sound_map = {
-            "jump": [(600, 0.05), (760, 0.05)],
-            "coin": [(900, 0.04), (1200, 0.06)],
-            "stomp": [(210, 0.06), (180, 0.06)],
+            "jump": [(620, 0.05), (780, 0.05)],
+            "coin": [(900, 0.04), (1240, 0.06)],
+            "stomp": [(220, 0.06), (180, 0.06)],
             "hit": [(200, 0.08), (120, 0.12)],
             "win": [(520, 0.08), (660, 0.08), (780, 0.08), (1040, 0.12)],
         }
@@ -102,430 +93,98 @@ class AudioEngine:
             for i in range(length):
                 t = i / self.sample_rate
                 envelope = math.exp(-5.5 * i / length)
-                wobble = math.sin(2 * math.pi * freq * t) + 0.35 * math.sin(2 * math.pi * (freq * 2) * t)
-                samples.append(int(16000 * wobble * envelope))
+                wave = math.sin(2 * math.pi * freq * t) + 0.35 * math.sin(2 * math.pi * freq * 2 * t)
+                samples.append(int(16000 * wave * envelope))
         sa.play_buffer(samples.tobytes(), 1, 2, self.sample_rate)
-
-
-class SpriteBank:
-    COLORS = {
-        ".": (0, 0, 0, 0),
-        "R": (214, 69, 44, 255),
-        "B": (45, 91, 214, 255),
-        "S": (245, 201, 163, 255),
-        "H": (115, 43, 24, 255),
-        "Y": (249, 199, 54, 255),
-        "O": (194, 120, 28, 255),
-        "K": (34, 25, 25, 255),
-        "W": (255, 255, 255, 255),
-        "G": (88, 174, 82, 255),
-        "D": (61, 119, 36, 255),
-        "L": (255, 234, 142, 255),
-        "N": (123, 84, 37, 255),
-    }
-
-    def __init__(self) -> None:
-        self.scale = 4
-        self.player_right = {
-            "idle": self._make_image(
-                [
-                    "..HHHH..",
-                    ".HRRRRH.",
-                    ".HRRRRRH",
-                    "..SSSS..",
-                    ".SSSSSR.",
-                    "..BBBB..",
-                    ".BBBBBB.",
-                    ".BB..BB.",
-                    "SS....SS",
-                    "S......S",
-                ]
-            ),
-            "run1": self._make_image(
-                [
-                    "..HHHH..",
-                    ".HRRRRH.",
-                    ".HRRRRRH",
-                    "..SSSS..",
-                    ".SSSSSR.",
-                    "..BBBB..",
-                    ".BBBBBB.",
-                    "BB...BB.",
-                    "S....SS.",
-                    ".....S..",
-                ]
-            ),
-            "run2": self._make_image(
-                [
-                    "..HHHH..",
-                    ".HRRRRH.",
-                    ".HRRRRRH",
-                    "..SSSS..",
-                    ".SSSSSR.",
-                    "..BBBB..",
-                    ".BBBBBB.",
-                    ".BB...BB",
-                    ".SS....S",
-                    "..S.....",
-                ]
-            ),
-            "jump": self._make_image(
-                [
-                    "..HHHH..",
-                    ".HRRRRH.",
-                    ".HRRRRRH",
-                    "..SSSS..",
-                    ".SSSSSR.",
-                    "..BBBB..",
-                    ".BBBBBB.",
-                    "..BB.B..",
-                    ".SS..SS.",
-                    "S......S",
-                ]
-            ),
-        }
-        self.enemy = [
-            self._make_image(
-                [
-                    "..NNNN..",
-                    ".NNNNNN.",
-                    "NNWWWWNN",
-                    "NNNNNNNN",
-                    ".NN..NN.",
-                    "N......N",
-                ]
-            ),
-            self._make_image(
-                [
-                    "..NNNN..",
-                    ".NNNNNN.",
-                    "NNWWWWNN",
-                    "NNNNNNNN",
-                    "N.N..N.N",
-                    ".N....N.",
-                ]
-            ),
-        ]
-        self.coin = [
-            self._make_image(
-                [
-                    "...YY...",
-                    "..YLLY..",
-                    ".YLLLLY.",
-                    ".YLYLLY.",
-                    ".YLLLLY.",
-                    "..YLLY..",
-                    "...YY...",
-                ]
-            ),
-            self._make_image(
-                [
-                    "...YY...",
-                    "...LL...",
-                    "..YLLY..",
-                    "..YLLY..",
-                    "..YLLY..",
-                    "...LL...",
-                    "...YY...",
-                ]
-            ),
-        ]
-        self.block = self._make_image(
-            [
-                "OOOOOOOO",
-                "OYYYYYYO",
-                "OYOOOOYO",
-                "OYOYYOYO",
-                "OYOOOOYO",
-                "OYYYYYYO",
-                "OOOOOOOO",
-                "OO....OO",
-            ]
-        )
-        self.brick = self._make_image(
-            [
-                "NNNNNNNN",
-                "NLLLLLLN",
-                "NNNNNNNN",
-                "NLLLLLLN",
-                "NNNNNNNN",
-                "NLLLLLLN",
-                "NNNNNNNN",
-                "NLLLLLLN",
-            ]
-        )
-
-    def _make_image(self, rows: list[str]) -> Image.Image:
-        width = len(rows[0])
-        height = len(rows)
-        img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        for y, row in enumerate(rows):
-            for x, cell in enumerate(row):
-                img.putpixel((x, y), self.COLORS[cell])
-        return img.resize((width * self.scale, height * self.scale), Image.Resampling.NEAREST)
-
-    def frame(self, image: Image.Image) -> ImageTk.PhotoImage:
-        return ImageTk.PhotoImage(image)
-
-    def player(self, pose: str, facing: int) -> ImageTk.PhotoImage:
-        img = self.player_right[pose]
-        if facing < 0:
-            img = ImageOps.mirror(img)
-        return self.frame(img)
-
-    def enemy_frame(self, index: int, facing: int) -> ImageTk.PhotoImage:
-        img = self.enemy[index % len(self.enemy)]
-        if facing > 0:
-            img = ImageOps.mirror(img)
-        return self.frame(img)
-
-    def coin_frame(self, index: int) -> ImageTk.PhotoImage:
-        return self.frame(self.coin[index % len(self.coin)])
-
-    def block_frame(self) -> ImageTk.PhotoImage:
-        return self.frame(self.block)
-
-    def brick_frame(self) -> ImageTk.PhotoImage:
-        return self.frame(self.brick)
 
 
 class DesktopMarioMac:
     def __init__(self) -> None:
-        self.root = tk.Tk()
-        self.root.title("Desktop Mario Mac")
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        self.root.configure(bg="systemTransparent")
-        self.root.wm_attributes("-transparent", True)
+        pygame.init()
+        pygame.display.set_caption("Desktop Mario Mac")
+        self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont("Menlo", 18, bold=True)
+        self.small_font = pygame.font.SysFont("Menlo", 12)
+        self.big_font = pygame.font.SysFont("Menlo", 22, bold=True)
 
-        self.screen_w = self.root.winfo_screenwidth()
-        self.screen_h = self.root.winfo_screenheight()
-        self.playfield_top = self.screen_h - PLAYFIELD_HEIGHT
-        self.root.geometry(f"{self.screen_w}x{self.screen_h}+0+0")
-
-        self.canvas = tk.Canvas(
-            self.root,
-            width=self.screen_w,
-            height=self.screen_h,
-            bg="systemTransparent",
-            highlightthickness=0,
-            bd=0,
-        )
-        self.canvas.pack(fill="both", expand=True)
-
-        self.command_queue: queue.Queue[str] = queue.Queue()
         self.running = True
-        self.visible = False
-        self.camera_x = 0.0
-        self.camera_target_x = 0.0
-        self.score = 0
-        self.best_score = 0
-        self.message = "Press Ctrl+Alt+M to play on your desktop"
-        self.message_ticks = 240
-        self.level_complete = False
-
-        self.left_pressed = False
-        self.right_pressed = False
-        self.run_pressed = False
-        self.jump_pressed = False
-        self.jump_buffer = 0
-        self.coyote_frames = 0
-        self.invuln_ticks = 0
-
         self.audio = AudioEngine()
-        self.sprites = SpriteBank()
-        self._setup_native_mac()
-        self._load_world()
+        self.best_score = 0
+        self.reset_level()
 
-        self._bind_keys()
-        self._start_hotkey_listener()
-        self._start_tray()
-
-        self.hide()
-        self.root.after(16, self._tick)
-        self.root.after(50, self._drain_queue)
-        self.root.protocol("WM_DELETE_WINDOW", self.quit)
-
-    def _setup_native_mac(self) -> None:
-        if not HAS_APPKIT:
-            return
-        try:
-            app = NSApplication.sharedApplication()
-            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-        except Exception:
-            pass
-        try:
-            self.root.createcommand("tk::mac::Quit", self.quit)
-        except Exception:
-            pass
-
-    def _load_world(self) -> None:
+    def reset_level(self) -> None:
         self.platforms = [
-            RectEntity(0, GROUND_Y, 820, 100),
-            RectEntity(920, GROUND_Y, 420, 100),
-            RectEntity(1430, GROUND_Y, 260, 100),
-            RectEntity(1760, GROUND_Y, 520, 100),
-            RectEntity(2340, GROUND_Y, 300, 100),
-            RectEntity(2720, GROUND_Y, 360, 100),
-            RectEntity(450, 198, 70, 26),
-            RectEntity(520, 198, 70, 26),
-            RectEntity(1050, 172, 70, 26),
-            RectEntity(1120, 172, 70, 26),
-            RectEntity(1190, 172, 70, 26),
-            RectEntity(1890, 180, 70, 26),
-            RectEntity(1960, 180, 70, 26),
-            RectEntity(2030, 180, 70, 26),
-            RectEntity(2550, 150, 70, 26),
-            RectEntity(2620, 150, 70, 26),
+            RectEntity(0, GROUND_Y, 820, 120),
+            RectEntity(920, GROUND_Y, 430, 120),
+            RectEntity(1450, GROUND_Y, 260, 120),
+            RectEntity(1780, GROUND_Y, 540, 120),
+            RectEntity(2370, GROUND_Y, 320, 120),
+            RectEntity(2760, GROUND_Y, 380, 120),
+            RectEntity(460, 230, 70, 24),
+            RectEntity(530, 230, 70, 24),
+            RectEntity(1040, 206, 70, 24),
+            RectEntity(1110, 206, 70, 24),
+            RectEntity(1180, 206, 70, 24),
+            RectEntity(1930, 214, 70, 24),
+            RectEntity(2000, 214, 70, 24),
+            RectEntity(2070, 214, 70, 24),
+            RectEntity(2590, 182, 70, 24),
+            RectEntity(2660, 182, 70, 24),
         ]
-        self.question_blocks = {(520, 198), (1120, 172), (1960, 180), (2550, 150)}
+        self.question_blocks = {(530, 230), (1110, 206), (2000, 214), (2590, 182)}
         self.coins = [
             Coin(x, y, phase=random.random() * math.tau)
             for x, y in [
-                (470, 150),
-                (540, 150),
-                (1070, 126),
-                (1140, 126),
-                (1210, 126),
-                (1910, 134),
-                (1980, 134),
-                (2050, 134),
-                (1480, 218),
-                (1540, 218),
-                (1820, 218),
-                (2570, 106),
-                (2640, 106),
+                (480, 185), (550, 185), (1060, 162), (1130, 162), (1200, 162),
+                (1950, 168), (2020, 168), (2090, 168), (1490, 258), (1560, 258),
+                (1840, 258), (2610, 138), (2680, 138),
             ]
         ]
         self.enemies = [
-            Enemy(680, GROUND_Y - 26, 28, 26, 620, 790),
-            Enemy(1490, GROUND_Y - 26, 28, 26, 1450, 1650),
-            Enemy(1840, GROUND_Y - 26, 28, 26, 1780, 2240),
-            Enemy(2760, GROUND_Y - 26, 28, 26, 2740, 3040),
+            Enemy(690, GROUND_Y - 26, 30, 26, 620, 790),
+            Enemy(1510, GROUND_Y - 26, 30, 26, 1470, 1660),
+            Enemy(1860, GROUND_Y - 26, 30, 26, 1810, 2270),
+            Enemy(2790, GROUND_Y - 26, 30, 26, 2770, 3070),
         ]
-        self.particles: list[Particle] = []
         self.player = RectEntity(96, GROUND_Y - PLAYER_H, PLAYER_W, PLAYER_H)
         self.player_vx = 0.0
         self.player_vy = 0.0
-        self.player_anim = 0.0
         self.on_ground = True
         self.facing = 1
-
-    def _bind_keys(self) -> None:
-        self.root.bind("<KeyPress>", self._on_key_press)
-        self.root.bind("<KeyRelease>", self._on_key_release)
-        self.root.bind("<Escape>", lambda _event: self.hide())
-
-    def _start_hotkey_listener(self) -> None:
-        def run_listener() -> None:
-            listener = keyboard.GlobalHotKeys({"<ctrl>+<alt>+m": self._queue_toggle})
-            listener.run()
-
-        threading.Thread(target=run_listener, daemon=True).start()
-
-    def _start_tray(self) -> None:
-        def run_tray() -> None:
-            menu = pystray.Menu(
-                pystray.MenuItem("Show / Hide", lambda: self._queue_toggle()),
-                pystray.MenuItem("Reset Run", lambda: self.command_queue.put("reset")),
-                pystray.MenuItem("Quit", lambda: self.command_queue.put("quit")),
-            )
-            self.icon = pystray.Icon(
-                "desktop-mario-mac",
-                self._tray_image(),
-                "Desktop Mario Mac",
-                menu,
-            )
-            self.icon.run()
-
-        threading.Thread(target=run_tray, daemon=True).start()
-
-    def _tray_image(self) -> Image.Image:
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle((8, 8, 56, 56), radius=14, fill=(220, 79, 56, 255))
-        draw.rectangle((17, 14, 47, 25), fill=(110, 45, 23, 255))
-        draw.rectangle((20, 24, 44, 34), fill=(250, 206, 170, 255))
-        draw.rectangle((18, 35, 46, 53), fill=(48, 98, 214, 255))
-        draw.rectangle((27, 29, 37, 34), fill=(250, 206, 170, 255))
-        return img
-
-    def _queue_toggle(self) -> None:
-        self.command_queue.put("toggle")
-
-    def _drain_queue(self) -> None:
-        while not self.command_queue.empty():
-            command = self.command_queue.get_nowait()
-            if command == "toggle":
-                self.show() if not self.visible else self.hide()
-            elif command == "reset":
-                self.reset_level()
-            elif command == "quit":
-                self.quit()
-                return
-        self.root.after(50, self._drain_queue)
-
-    def _on_key_press(self, event: tk.Event) -> None:
-        if event.keysym in ("Left", "a", "A"):
-            self.left_pressed = True
-        elif event.keysym in ("Right", "d", "D"):
-            self.right_pressed = True
-        elif event.keysym in ("Shift_L", "Shift_R"):
-            self.run_pressed = True
-        elif event.keysym == "space":
-            self.jump_pressed = True
-            self.jump_buffer = 8
-
-    def _on_key_release(self, event: tk.Event) -> None:
-        if event.keysym in ("Left", "a", "A"):
-            self.left_pressed = False
-        elif event.keysym in ("Right", "d", "D"):
-            self.right_pressed = False
-        elif event.keysym in ("Shift_L", "Shift_R"):
-            self.run_pressed = False
-        elif event.keysym == "space":
-            self.jump_pressed = False
-            if self.player_vy < -4.5:
-                self.player_vy *= 0.58
-
-    def reset_level(self) -> None:
-        self._load_world()
+        self.coyote_frames = 0
+        self.jump_buffer = 0
+        self.invuln_ticks = 0
+        self.player_anim = 0.0
         self.camera_x = 0.0
-        self.camera_target_x = 0.0
         self.score = 0
+        self.message = "Desktop Mario Mac"
+        self.message_ticks = 180
         self.level_complete = False
-        self.message = "Fresh run."
-        self.message_ticks = 100
+        self.particles: list[Particle] = []
 
-    def show(self) -> None:
-        self.visible = True
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-        self.message = "Desktop Mario ready"
-        self.message_ticks = 80
-
-    def hide(self) -> None:
-        self.visible = False
-        self.root.withdraw()
-
-    def quit(self) -> None:
-        self.running = False
-        try:
-            if hasattr(self, "icon"):
-                self.icon.stop()
-        except Exception:
-            pass
-        self.root.quit()
-        self.root.destroy()
-
-    def _tick(self) -> None:
-        if not self.running:
-            return
-        if self.visible:
+    def run(self) -> None:
+        while self.running:
+            self.clock.tick(FPS)
+            self._handle_events()
             self._update()
             self._draw()
-        self.root.after(16, self._tick)
+        pygame.quit()
+
+    def _handle_events(self) -> None:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                elif event.key == pygame.K_r:
+                    self.reset_level()
+                elif event.key in (pygame.K_SPACE, pygame.K_UP):
+                    self.jump_buffer = 8
+            elif event.type == pygame.KEYUP:
+                if event.key in (pygame.K_SPACE, pygame.K_UP) and self.player_vy < -4.5:
+                    self.player_vy *= 0.58
 
     def _update(self) -> None:
         self.player_anim += 0.22
@@ -535,17 +194,22 @@ class DesktopMarioMac:
             self.invuln_ticks -= 1
         if self.jump_buffer > 0:
             self.jump_buffer -= 1
+
+        keys = pygame.key.get_pressed()
+        left = keys[pygame.K_LEFT] or keys[pygame.K_a]
+        right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+        run = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+
         if self.level_complete:
-            self.camera_target_x = max(0, WORLD_WIDTH - self.screen_w)
-            self.camera_x += (self.camera_target_x - self.camera_x) * 0.08
+            self.camera_x += (max(0, WORLD_WIDTH - WINDOW_W) - self.camera_x) * 0.08
             return
 
         accel = 0.85 if self.on_ground else 0.45
-        max_speed = 7.4 if self.run_pressed else 4.8
+        max_speed = 7.4 if run else 4.8
         target_vx = 0.0
-        if self.left_pressed:
+        if left:
             target_vx -= max_speed
-        if self.right_pressed:
+        if right:
             target_vx += max_speed
         self.player_vx += (target_vx - self.player_vx) * accel * 0.18
         if abs(target_vx) < 0.1:
@@ -556,50 +220,47 @@ class DesktopMarioMac:
             self.facing = 1 if self.player_vx > 0 else -1
 
         if (self.on_ground or self.coyote_frames > 0) and self.jump_buffer > 0:
-            self.player_vy = -11.9 if self.run_pressed else -11.0
+            self.player_vy = -11.8 if run else -11.0
             self.on_ground = False
             self.coyote_frames = 0
             self.jump_buffer = 0
             self.audio.play("jump")
-            self._burst(self.player.x + self.player.w / 2, self.player.y + self.player.h, "#fff2bf", 5)
+            self._burst(self.player.x + self.player.w / 2, self.player.y + self.player.h, (255, 242, 191), 6)
 
         self.player.x += self.player_vx
         self._resolve_horizontal()
 
+        was_grounded = self.on_ground
         self.player_vy = clamp(self.player_vy + GRAVITY, -20, MAX_FALL)
         self.player.y += self.player_vy
-        was_grounded = self.on_ground
         self.on_ground = False
         self._resolve_vertical()
         self.coyote_frames = 6 if self.on_ground else max(0, self.coyote_frames - 1)
         if self.on_ground and not was_grounded:
-            self._burst(self.player.x + self.player.w / 2, self.player.y + self.player.h, "#f7df9c", 4)
+            self._burst(self.player.x + self.player.w / 2, self.player.y + self.player.h, (247, 223, 156), 4)
 
-        if self.player.y > PLAYFIELD_HEIGHT + 40:
+        if self.player.y > WINDOW_H + 80:
             self.player.x = 96
             self.player.y = GROUND_Y - PLAYER_H
             self.player_vx = 0
             self.player_vy = 0
-            self.camera_target_x = max(0, self.player.x - self.screen_w * 0.35)
             self.message = "Watch the gaps."
-            self.message_ticks = 110
+            self.message_ticks = 100
             self.audio.play("hit")
 
-        self.camera_target_x = clamp(self.player.x - self.screen_w * 0.35, 0, max(0, WORLD_WIDTH - self.screen_w))
-        self.camera_x += (self.camera_target_x - self.camera_x) * 0.12
+        target_camera = clamp(self.player.x - WINDOW_W * 0.35, 0, max(0, WORLD_WIDTH - WINDOW_W))
+        self.camera_x += (target_camera - self.camera_x) * 0.12
 
         for coin in self.coins:
             coin.phase += 0.2
-            if coin.collected:
-                continue
-            if self._circle_hits_player(coin.x, coin.y, 12):
+            if not coin.collected and self._circle_hits_player(coin.x, coin.y, 12):
                 coin.collected = True
                 self.score += 100
                 self.best_score = max(self.best_score, self.score)
                 self.message = "+100"
-                self.message_ticks = 28
+                self.message_ticks = 25
                 self.audio.play("coin")
-                self._burst(coin.x, coin.y, "#f7c73a", 8)
+                self._burst(coin.x, coin.y, (247, 199, 58), 8)
 
         for enemy in self.enemies:
             if not enemy.alive:
@@ -616,15 +277,15 @@ class DesktopMarioMac:
                     self.score += 250
                     self.best_score = max(self.best_score, self.score)
                     self.message = "stomp +250"
-                    self.message_ticks = 48
+                    self.message_ticks = 40
                     self.audio.play("stomp")
-                    self._burst(enemy.x + enemy.w / 2, enemy.y + enemy.h / 2, "#8e5a2f", 10)
+                    self._burst(enemy.x + enemy.w / 2, enemy.y + enemy.h / 2, (142, 90, 47), 10)
                 elif self.invuln_ticks == 0:
                     self.invuln_ticks = 90
                     self.player.x = max(40, self.player.x - 70)
                     self.player_vx = -4 * self.facing
                     self.message = "Ouch."
-                    self.message_ticks = 60
+                    self.message_ticks = 50
                     self.audio.play("hit")
 
         for particle in list(self.particles):
@@ -638,7 +299,7 @@ class DesktopMarioMac:
         if self.player.x > WORLD_WIDTH - 150:
             self.level_complete = True
             self.message = "Desktop saved. Nice run."
-            self.message_ticks = 220
+            self.message_ticks = 180
             self.audio.play("win")
             self.best_score = max(self.best_score, self.score)
 
@@ -660,9 +321,6 @@ class DesktopMarioMac:
                 elif self.player_vy < 0 and self.player.y - self.player_vy >= plat.y + plat.h - 5:
                     self.player.y = plat.y + plat.h
                     self.player_vy = 0
-                    if (plat.x, plat.y) in self.question_blocks:
-                        self.message = "Bonk."
-                        self.message_ticks = 20
 
     def _circle_hits_player(self, x: float, y: float, radius: float) -> bool:
         nearest_x = max(self.player.x, min(x, self.player.x + self.player.w))
@@ -674,7 +332,7 @@ class DesktopMarioMac:
     def _rects_overlap(self, a: RectEntity, b: RectEntity) -> bool:
         return a.x < b.x + b.w and a.x + a.w > b.x and a.y < b.y + b.h and a.y + a.h > b.y
 
-    def _burst(self, x: float, y: float, color: str, count: int) -> None:
+    def _burst(self, x: float, y: float, color: tuple[int, int, int], count: int) -> None:
         for _ in range(count):
             self.particles.append(
                 Particle(
@@ -689,172 +347,117 @@ class DesktopMarioMac:
             )
 
     def _draw(self) -> None:
-        self.canvas.delete("all")
-        self.canvas.image = []
-        self._draw_environment()
+        self.screen.fill((120, 201, 255))
+        self._draw_background()
         self._draw_world()
         self._draw_particles()
-        self._draw_overlay_ui()
+        self._draw_ui()
+        pygame.display.flip()
 
-    def _draw_environment(self) -> None:
-        horizon = self.playfield_top
-        self.canvas.create_rectangle(
-            0,
-            horizon,
-            self.screen_w,
-            self.screen_h,
-            fill="#78c9ff",
-            outline="",
-        )
-        self.canvas.create_rectangle(
-            0,
-            horizon,
-            self.screen_w,
-            horizon + 40,
-            fill="#bce6ff",
-            outline="",
-        )
+    def _draw_background(self) -> None:
+        pygame.draw.rect(self.screen, (188, 230, 255), (0, 0, WINDOW_W, 44))
         for idx in range(5):
-            cloud_x = ((idx * 320) - (self.camera_x * (0.12 + idx * 0.01))) % (self.screen_w + 160) - 80
-            cloud_y = horizon + 40 + (idx % 2) * 28
+            cloud_x = ((idx * 320) - (self.camera_x * (0.12 + idx * 0.01))) % (WINDOW_W + 180) - 90
+            cloud_y = 46 + (idx % 2) * 24
             self._draw_cloud(cloud_x, cloud_y)
-        for idx, color in enumerate(("#b8d8a2", "#92bf74", "#6ea254")):
+        for idx, color in enumerate(((184, 216, 162), (146, 191, 116), (110, 162, 84))):
             parallax = 0.18 + idx * 0.07
-            base_y = horizon + 180 + idx * 26
-            points = []
-            for x in range(-120, self.screen_w + 121, 120):
+            base_y = 224 + idx * 28
+            points = [(0, WINDOW_H)]
+            for x in range(-120, WINDOW_W + 121, 120):
                 world_x = x + self.camera_x * parallax
                 height = 28 + (math.sin(world_x / 130) + 1) * 24 + idx * 8
-                points.extend([x, base_y - height])
-            polygon = [0, self.screen_h, 0, base_y] + points + [self.screen_w, self.screen_h]
-            self.canvas.create_polygon(polygon, fill=color, outline="")
+                points.append((x, base_y - height))
+            points.append((WINDOW_W, WINDOW_H))
+            pygame.draw.polygon(self.screen, color, points)
 
     def _draw_cloud(self, x: float, y: float) -> None:
         for dx, dy, r in [(0, 8, 22), (24, 0, 24), (52, 10, 18), (78, 8, 14)]:
-            self.canvas.create_oval(x + dx, y + dy, x + dx + r * 2, y + dy + r * 2, fill="white", outline="")
+            pygame.draw.circle(self.screen, (255, 255, 255), (int(x + dx + r), int(y + dy + r)), r)
 
     def _draw_world(self) -> None:
         for plat in self.platforms:
             if plat.y >= GROUND_Y:
                 self._draw_ground(plat)
             else:
-                self._draw_block_platform(plat)
+                self._draw_block(plat)
 
         for coin in self.coins:
             if coin.collected:
                 continue
-            frame = 0 if math.sin(coin.phase) > 0 else 1
-            img = self.sprites.coin_frame(frame)
-            self.canvas.create_image(coin.x - self.camera_x, self.playfield_top + coin.y, image=img)
-            self.canvas.image.append(img)
+            wobble = math.sin(coin.phase) * 2
+            x = int(coin.x - self.camera_x)
+            y = int(coin.y + wobble)
+            pygame.draw.circle(self.screen, (242, 194, 48), (x, y), 12)
+            pygame.draw.circle(self.screen, (156, 112, 0), (x, y), 12, 3)
 
         for enemy in self.enemies:
             if not enemy.alive:
                 continue
-            img = self.sprites.enemy_frame(int(enemy.frame) % 2, 1 if enemy.vx > 0 else -1)
-            self.canvas.create_image(enemy.x - self.camera_x + enemy.w / 2, self.playfield_top + enemy.y + enemy.h / 2, image=img)
-            self.canvas.image.append(img)
+            x = int(enemy.x - self.camera_x)
+            y = int(enemy.y)
+            pygame.draw.ellipse(self.screen, (139, 76, 32), (x, y + 8, enemy.w, enemy.h - 8))
+            pygame.draw.rect(self.screen, (90, 44, 15), (x + 4, y + 2, enemy.w - 8, 12))
+            eye_offset = 6 if enemy.vx > 0 else 1
+            pygame.draw.circle(self.screen, (255, 255, 255), (x + eye_offset + 8, y + 15), 2)
+            pygame.draw.circle(self.screen, (255, 255, 255), (x + eye_offset + 16, y + 15), 2)
 
-        pose = "jump"
-        if self.on_ground and abs(self.player_vx) < 0.6:
-            pose = "idle"
-        elif self.on_ground:
-            pose = "run1" if int(self.player_anim) % 2 == 0 else "run2"
-        player_img = self.sprites.player(pose, self.facing)
         if not (self.invuln_ticks > 0 and self.invuln_ticks % 8 < 4):
-            self.canvas.create_image(
-                self.player.x - self.camera_x + self.player.w / 2,
-                self.playfield_top + self.player.y + self.player.h / 2,
-                image=player_img,
-            )
-        self.canvas.image.append(player_img)
+            self._draw_player()
 
-        flag_x = WORLD_WIDTH - self.camera_x - 90
-        pole_top = self.playfield_top + 70
-        pole_bottom = self.playfield_top + GROUND_Y
-        self.canvas.create_rectangle(flag_x, pole_top, flag_x + 6, pole_bottom, fill="#ececec", outline="")
-        self.canvas.create_polygon(
-            flag_x + 6,
-            pole_top + 8,
-            flag_x + 52,
-            pole_top + 22,
-            flag_x + 6,
-            pole_top + 36,
-            fill="#f14a37",
-            outline="",
-        )
+        flag_x = int(WORLD_WIDTH - self.camera_x - 90)
+        pygame.draw.rect(self.screen, (236, 236, 236), (flag_x, 70, 6, GROUND_Y - 70))
+        pygame.draw.polygon(self.screen, (241, 74, 55), [(flag_x + 6, 84), (flag_x + 52, 96), (flag_x + 6, 110)])
 
     def _draw_ground(self, plat: RectEntity) -> None:
-        x1 = plat.x - self.camera_x
-        y1 = self.playfield_top + plat.y
-        x2 = x1 + plat.w
-        y2 = y1 + plat.h
-        self.canvas.create_rectangle(x1, y1, x2, y2, fill="#9c6b30", outline="#5f3f15", width=2)
-        self.canvas.create_rectangle(x1, y1, x2, y1 + 18, fill="#65b54b", outline="")
-        for x in range(int(x1), int(x2), 26):
-            self.canvas.create_line(x, y1 + 18, x + 10, y2, fill="#7a4b1e", width=2)
+        x = int(plat.x - self.camera_x)
+        pygame.draw.rect(self.screen, (156, 107, 48), (x, int(plat.y), int(plat.w), int(plat.h)))
+        pygame.draw.rect(self.screen, (101, 181, 75), (x, int(plat.y), int(plat.w), 18))
+        for line_x in range(x, x + int(plat.w), 26):
+            pygame.draw.line(self.screen, (122, 75, 30), (line_x, int(plat.y) + 18), (line_x + 10, int(plat.y + plat.h)), 2)
 
-    def _draw_block_platform(self, plat: RectEntity) -> None:
-        tile_size = 32
-        frame = self.sprites.block_frame() if (plat.x, plat.y) in self.question_blocks else self.sprites.brick_frame()
-        self.canvas.image = getattr(self.canvas, "image", [])
-        for x in range(int(plat.x), int(plat.x + plat.w), tile_size):
-            self.canvas.create_image(x - self.camera_x + tile_size / 2, self.playfield_top + plat.y + tile_size / 2, image=frame)
-        self.canvas.image.append(frame)
+    def _draw_block(self, plat: RectEntity) -> None:
+        x = int(plat.x - self.camera_x)
+        color = (194, 120, 28) if (plat.x, plat.y) in self.question_blocks else (123, 84, 37)
+        border = (249, 199, 54) if (plat.x, plat.y) in self.question_blocks else (214, 176, 111)
+        pygame.draw.rect(self.screen, color, (x, int(plat.y), int(plat.w), int(plat.h)))
+        pygame.draw.rect(self.screen, border, (x, int(plat.y), int(plat.w), int(plat.h)), 3)
+
+    def _draw_player(self) -> None:
+        x = int(self.player.x - self.camera_x)
+        y = int(self.player.y)
+        pygame.draw.rect(self.screen, (37, 84, 199), (x + 6, y + 16, self.player.w - 12, self.player.h - 16))
+        pygame.draw.rect(self.screen, (215, 75, 57), (x + 4, y + 8, self.player.w - 8, 12))
+        pygame.draw.rect(self.screen, (241, 200, 155), (x + 7, y + 18, self.player.w - 14, 12))
+        pygame.draw.rect(self.screen, (140, 43, 24), (x + 3, y + 2, self.player.w - 6, 8))
+        pygame.draw.rect(self.screen, (215, 75, 57), (x + 1, y + 10, self.player.w - 2, 4))
+        pygame.draw.circle(self.screen, (0, 0, 0), (x + 12, y + 23), 2)
+        pygame.draw.circle(self.screen, (0, 0, 0), (x + self.player.w - 12, y + 23), 2)
 
     def _draw_particles(self) -> None:
         for particle in self.particles:
-            x = particle.x - self.camera_x
-            y = self.playfield_top + particle.y
-            self.canvas.create_rectangle(
-                x,
-                y,
-                x + particle.size,
-                y + particle.size,
-                fill=particle.color,
-                outline="",
+            pygame.draw.rect(
+                self.screen,
+                particle.color,
+                (int(particle.x - self.camera_x), int(particle.y), particle.size, particle.size),
             )
 
-    def _draw_overlay_ui(self) -> None:
-        panel_x = 24
-        panel_y = 24
-        panel_w = 360
-        panel_h = 96
-        self.canvas.create_rectangle(panel_x, panel_y, panel_x + panel_w, panel_y + panel_h, fill="#0e1420", outline="", stipple="gray50")
-        self.canvas.create_text(panel_x + 18, panel_y + 18, anchor="nw", text=f"Score {self.score}", fill="#ffffff", font=("Menlo", 20, "bold"))
-        self.canvas.create_text(
-            panel_x + 18,
-            panel_y + 48,
-            anchor="nw",
-            text=f"Best {self.best_score}    Ctrl+Alt+M toggle    Esc hide",
-            fill="#f7d56d",
-            font=("Menlo", 11),
-        )
-        self.canvas.create_text(
-            panel_x + 18,
-            panel_y + 68,
-            anchor="nw",
-            text="Arrows move, Space jumps, Shift runs",
-            fill="#c9e7ff",
-            font=("Menlo", 11),
-        )
+    def _draw_ui(self) -> None:
+        pygame.draw.rect(self.screen, (14, 20, 32), (24, 20, 360, 100), border_radius=14)
+        score_label = self.font.render(f"Score {self.score}", True, (255, 255, 255))
+        best_label = self.small_font.render(f"Best {self.best_score}    Esc quit    R reset", True, (247, 213, 109))
+        controls = self.small_font.render("Arrows move, Space jumps, Shift runs", True, (201, 231, 255))
+        self.screen.blit(score_label, (42, 34))
+        self.screen.blit(best_label, (42, 68))
+        self.screen.blit(controls, (42, 88))
+
+        badge = self.small_font.render(f"pygame window mode  |  {'audio on' if HAS_AUDIO else 'audio off'}", True, (216, 239, 255))
+        pygame.draw.rect(self.screen, (22, 35, 53), (WINDOW_W - 294, 24, 270, 40), border_radius=10)
+        self.screen.blit(badge, (WINDOW_W - 278, 36))
+
         if self.message_ticks > 0:
-            self.canvas.create_text(
-                self.screen_w // 2,
-                46,
-                text=self.message,
-                fill="#ffffff",
-                font=("Menlo", 17, "bold"),
-            )
-
-        badge = "native mac mode" if HAS_APPKIT else "tk overlay mode"
-        sound = "audio on" if HAS_AUDIO else "audio off"
-        badge_text = f"{badge}  |  {sound}"
-        self.canvas.create_rectangle(self.screen_w - 280, 24, self.screen_w - 24, 62, fill="#162335", outline="", stipple="gray50")
-        self.canvas.create_text(self.screen_w - 152, 43, text=badge_text, fill="#d8efff", font=("Menlo", 10))
-
-    def run(self) -> None:
-        self.root.mainloop()
+            text = self.big_font.render(self.message, True, (255, 255, 255))
+            self.screen.blit(text, (WINDOW_W // 2 - text.get_width() // 2, 28))
 
 
 if __name__ == "__main__":
