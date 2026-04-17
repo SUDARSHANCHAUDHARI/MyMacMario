@@ -3,7 +3,6 @@ import os
 import queue
 import random
 import threading
-import traceback
 from array import array
 from dataclasses import dataclass
 
@@ -43,7 +42,6 @@ PLAYER_W = 34
 PLAYER_H = 44
 FPS = 60
 OVERLAY_MARGIN = 18
-DEBUG_LOG_PATH = "/tmp/desktop_mario_mac.log"
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -140,7 +138,6 @@ if HAS_APPKIT:
 class DesktopMarioMac:
     def __init__(self) -> None:
         os.environ.setdefault("SDL_VIDEO_ALLOW_SCREENSAVER", "1")
-        self._debug("app boot")
         pygame.init()
         pygame.display.set_caption("Desktop Mario Mac")
         self.display_flags = pygame.SCALED
@@ -161,8 +158,6 @@ class DesktopMarioMac:
         self.command_queue: queue.Queue[str] = queue.Queue()
         self.status_item = None
         self.status_delegate = None
-        self.integration_status = "menu pending"
-        self.integration_detail = "starting integration checks"
         self.reset_level()
         self._apply_window_mode()
         self._start_hotkey_listener()
@@ -232,13 +227,6 @@ class DesktopMarioMac:
                 pass
         pygame.quit()
 
-    def _debug(self, message: str) -> None:
-        try:
-            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as log_file:
-                log_file.write(message + "\n")
-        except Exception:
-            pass
-
     def _handle_events(self) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -284,7 +272,6 @@ class DesktopMarioMac:
 
     def _start_hotkey_listener(self) -> None:
         if not HAS_HOTKEY:
-            self._debug("hotkey unavailable")
             return
 
         def run_listener() -> None:
@@ -297,17 +284,10 @@ class DesktopMarioMac:
             listener.run()
 
         threading.Thread(target=run_listener, daemon=True).start()
-        self._debug("hotkey listener started")
 
     def _start_tray(self) -> None:
         if HAS_APPKIT and self._start_native_status_item():
-            self.integration_status = "native menu bar active"
-            self.integration_detail = "look for M in top-right menu bar"
             return
-        if not HAS_APPKIT:
-            self.integration_status = "menu bar unavailable"
-            self.integration_detail = "AppKit unavailable"
-            self._debug("native menu unavailable")
 
     def _start_native_status_item(self) -> bool:
         try:
@@ -333,15 +313,10 @@ class DesktopMarioMac:
                 item.setTarget_(self.status_delegate)
                 menu.addItem_(item)
             self.status_item.setMenu_(menu)
-            self._debug("native status item created")
             return True
-        except Exception as exc:
+        except Exception:
             self.status_item = None
             self.status_delegate = None
-            self.integration_status = "native menu failed"
-            self.integration_detail = str(exc)[:90]
-            self._debug("native status item failed")
-            self._debug(traceback.format_exc())
             return False
 
     def toggle_overlay_mode(self) -> None:
@@ -650,16 +625,12 @@ class DesktopMarioMac:
 
         mode_label = "overlay mode" if self.overlay_mode else "window mode"
         badge = self.small_font.render(
-            f"pygame {mode_label}  |  Ctrl+Alt+O  |  {'audio on' if HAS_AUDIO else 'audio off'}",
+            f"pygame {mode_label}  |  Ctrl+Alt+O  |  M menu  |  {'audio on' if HAS_AUDIO else 'audio off'}",
             True,
             (216, 239, 255),
         )
-        pygame.draw.rect(self.screen, (22, 35, 53), (WINDOW_W - 294, 24, 270, 40), border_radius=10)
+        pygame.draw.rect(self.screen, (22, 35, 53), (WINDOW_W - 372, 24, 348, 40), border_radius=10)
         self.screen.blit(badge, (WINDOW_W - 278, 36))
-        integration = self.small_font.render(self.integration_status, True, (255, 241, 171))
-        detail = self.small_font.render(self.integration_detail[:44], True, (201, 231, 255))
-        self.screen.blit(integration, (WINDOW_W - 278, 78))
-        self.screen.blit(detail, (WINDOW_W - 278, 96))
 
         if self.message_ticks > 0:
             text = self.big_font.render(self.message, True, (255, 255, 255))
