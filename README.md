@@ -37,6 +37,8 @@ The app bundle will be created at:
 dist/Desktop Mario Mac.app
 ```
 
+Inside the bundle build output, PyInstaller also creates the supporting onedir app contents it needs for macOS packaging.
+
 ## Controls
 
 - `Left` / `Right`: Move

@@ -1,19 +1,9 @@
-from PyInstaller.utils.hooks import collect_submodules
-
-hiddenimports = []
-for package_name in ("pygame", "simpleaudio"):
-    try:
-        hiddenimports += collect_submodules(package_name)
-    except Exception:
-        pass
-
-
 a = Analysis(
     ["desktop_mario_mac.py"],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=hiddenimports,
+    hiddenimports=["simpleaudio.functionchecks"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -24,9 +14,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="Desktop Mario Mac",
     debug=False,
     bootloader_ignore_signals=False,
@@ -34,8 +23,16 @@ exe = EXE(
     upx=True,
     console=False,
 )
-app = BUNDLE(
+coll = COLLECT(
     exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    name="Desktop Mario Mac",
+)
+app = BUNDLE(
+    coll,
     name="Desktop Mario Mac.app",
     icon=None,
     bundle_identifier="com.sudarshan.mymacmario",
