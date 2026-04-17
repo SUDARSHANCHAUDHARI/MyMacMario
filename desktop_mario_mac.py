@@ -1,10 +1,29 @@
 import math
+import os
+import queue
 import random
 import threading
+import traceback
 from array import array
 from dataclasses import dataclass
 
 import pygame
+from pygame._sdl2 import Window
+
+try:
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSMenu, NSMenuItem, NSStatusBar, NSVariableStatusItemLength
+    from Foundation import NSObject
+
+    HAS_APPKIT = True
+except Exception:
+    HAS_APPKIT = False
+
+try:
+    from pynput import keyboard
+
+    HAS_HOTKEY = True
+except Exception:
+    HAS_HOTKEY = False
 
 try:
     import simpleaudio as sa
@@ -23,6 +42,8 @@ MAX_FALL = 13
 PLAYER_W = 34
 PLAYER_H = 44
 FPS = 60
+OVERLAY_MARGIN = 18
+DEBUG_LOG_PATH = "/tmp/desktop_mario_mac.log"
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -98,20 +119,54 @@ class AudioEngine:
         sa.play_buffer(samples.tobytes(), 1, 2, self.sample_rate)
 
 
+if HAS_APPKIT:
+    class StatusBarDelegate(NSObject):
+        def toggleOverlay_(self, _sender) -> None:
+            self.command_queue.put("toggle_overlay")
+
+        def cycleOpacity_(self, _sender) -> None:
+            self.command_queue.put("cycle_opacity")
+
+        def resetRun_(self, _sender) -> None:
+            self.command_queue.put("reset")
+
+        def focusWindow_(self, _sender) -> None:
+            self.command_queue.put("focus")
+
+        def quitApp_(self, _sender) -> None:
+            self.command_queue.put("quit")
+
+
 class DesktopMarioMac:
     def __init__(self) -> None:
+        os.environ.setdefault("SDL_VIDEO_ALLOW_SCREENSAVER", "1")
+        self._debug("app boot")
         pygame.init()
         pygame.display.set_caption("Desktop Mario Mac")
-        self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+        self.display_flags = pygame.SCALED
+        self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), self.display_flags)
+        self.window = Window.from_display_module()
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Menlo", 18, bold=True)
         self.small_font = pygame.font.SysFont("Menlo", 12)
         self.big_font = pygame.font.SysFont("Menlo", 22, bold=True)
+        desktop_sizes = pygame.display.get_desktop_sizes()
+        self.screen_w, self.screen_h = desktop_sizes[0] if desktop_sizes else self.window.size
+        self.overlay_mode = False
+        self.overlay_opacity = 0.92
 
         self.running = True
         self.audio = AudioEngine()
         self.best_score = 0
+        self.command_queue: queue.Queue[str] = queue.Queue()
+        self.status_item = None
+        self.status_delegate = None
+        self.integration_status = "menu pending"
+        self.integration_detail = "starting integration checks"
         self.reset_level()
+        self._apply_window_mode()
+        self._start_hotkey_listener()
+        self._start_tray()
 
     def reset_level(self) -> None:
         self.platforms = [
@@ -166,10 +221,23 @@ class DesktopMarioMac:
     def run(self) -> None:
         while self.running:
             self.clock.tick(FPS)
+            self._drain_external_commands()
             self._handle_events()
             self._update()
             self._draw()
+        if self.status_item is not None:
+            try:
+                NSStatusBar.systemStatusBar().removeStatusItem_(self.status_item)
+            except Exception:
+                pass
         pygame.quit()
+
+    def _debug(self, message: str) -> None:
+        try:
+            with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as log_file:
+                log_file.write(message + "\n")
+        except Exception:
+            pass
 
     def _handle_events(self) -> None:
         for event in pygame.event.get():
@@ -177,14 +245,143 @@ class DesktopMarioMac:
                 self.running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    self.running = False
+                    if self.overlay_mode:
+                        self.toggle_overlay_mode()
+                    else:
+                        self.running = False
                 elif event.key == pygame.K_r:
                     self.reset_level()
                 elif event.key in (pygame.K_SPACE, pygame.K_UP):
                     self.jump_buffer = 8
+                elif event.key == pygame.K_F10:
+                    self.toggle_overlay_mode()
+                elif event.key == pygame.K_F11:
+                    self.cycle_overlay_opacity()
+                elif event.key == pygame.K_o:
+                    self.toggle_overlay_mode()
+                elif event.key == pygame.K_p:
+                    self.cycle_overlay_opacity()
             elif event.type == pygame.KEYUP:
                 if event.key in (pygame.K_SPACE, pygame.K_UP) and self.player_vy < -4.5:
                     self.player_vy *= 0.58
+
+    def _drain_external_commands(self) -> None:
+        while not self.command_queue.empty():
+            command = self.command_queue.get_nowait()
+            if command == "toggle_overlay":
+                self.toggle_overlay_mode()
+            elif command == "cycle_opacity":
+                self.cycle_overlay_opacity()
+            elif command == "reset":
+                self.reset_level()
+            elif command == "quit":
+                self.running = False
+            elif command == "focus":
+                try:
+                    self.window.focus(input_only=False)
+                except Exception:
+                    pass
+
+    def _start_hotkey_listener(self) -> None:
+        if not HAS_HOTKEY:
+            self._debug("hotkey unavailable")
+            return
+
+        def run_listener() -> None:
+            listener = keyboard.GlobalHotKeys(
+                {
+                    "<ctrl>+<alt>+o": lambda: self.command_queue.put("toggle_overlay"),
+                    "<ctrl>+<alt>+p": lambda: self.command_queue.put("cycle_opacity"),
+                }
+            )
+            listener.run()
+
+        threading.Thread(target=run_listener, daemon=True).start()
+        self._debug("hotkey listener started")
+
+    def _start_tray(self) -> None:
+        if HAS_APPKIT and self._start_native_status_item():
+            self.integration_status = "native menu bar active"
+            self.integration_detail = "look for M in top-right menu bar"
+            return
+        if not HAS_APPKIT:
+            self.integration_status = "menu bar unavailable"
+            self.integration_detail = "AppKit unavailable"
+            self._debug("native menu unavailable")
+
+    def _start_native_status_item(self) -> bool:
+        try:
+            app = NSApplication.sharedApplication()
+            app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+            self.status_delegate = StatusBarDelegate.alloc().init()
+            self.status_delegate.command_queue = self.command_queue
+            self.status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+            button = self.status_item.button()
+            button.setTitle_("M")
+            button.setToolTip_("Desktop Mario Mac")
+
+            menu = NSMenu.alloc().init()
+            items = [
+                ("Toggle Overlay", "toggleOverlay:"),
+                ("Cycle Opacity", "cycleOpacity:"),
+                ("Reset Run", "resetRun:"),
+                ("Focus Window", "focusWindow:"),
+                ("Quit", "quitApp:"),
+            ]
+            for title, action in items:
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
+                item.setTarget_(self.status_delegate)
+                menu.addItem_(item)
+            self.status_item.setMenu_(menu)
+            self._debug("native status item created")
+            return True
+        except Exception as exc:
+            self.status_item = None
+            self.status_delegate = None
+            self.integration_status = "native menu failed"
+            self.integration_detail = str(exc)[:90]
+            self._debug("native status item failed")
+            self._debug(traceback.format_exc())
+            return False
+
+    def toggle_overlay_mode(self) -> None:
+        self.overlay_mode = not self.overlay_mode
+        self._apply_window_mode()
+        if self.overlay_mode:
+            self.message = "Overlay mode on"
+        else:
+            self.message = "Window mode on"
+        self.message_ticks = 120
+
+    def cycle_overlay_opacity(self) -> None:
+        if not self.overlay_mode:
+            self.message = "Enable overlay mode first"
+            self.message_ticks = 90
+            return
+        values = [0.82, 0.9, 0.96]
+        current_index = min(range(len(values)), key=lambda idx: abs(values[idx] - self.overlay_opacity))
+        self.overlay_opacity = values[(current_index + 1) % len(values)]
+        self._apply_window_mode()
+        self.message = f"Overlay opacity {int(self.overlay_opacity * 100)}%"
+        self.message_ticks = 90
+
+    def _apply_window_mode(self) -> None:
+        window_w = WINDOW_W
+        window_h = WINDOW_H
+        x = (self.screen_w - window_w) // 2
+        y = (self.screen_h - window_h) // 2
+        self.window.resizable = False
+        self.window.size = (window_w, window_h)
+        if self.overlay_mode:
+            y = self.screen_h - window_h - OVERLAY_MARGIN
+            self.window.borderless = True
+            self.window.always_on_top = True
+            self.window.opacity = self.overlay_opacity
+        else:
+            self.window.borderless = False
+            self.window.always_on_top = False
+            self.window.opacity = 1.0
+        self.window.position = (x, max(40, y))
 
     def _update(self) -> None:
         self.player_anim += 0.22
@@ -446,14 +643,23 @@ class DesktopMarioMac:
         pygame.draw.rect(self.screen, (14, 20, 32), (24, 20, 360, 100), border_radius=14)
         score_label = self.font.render(f"Score {self.score}", True, (255, 255, 255))
         best_label = self.small_font.render(f"Best {self.best_score}    Esc quit    R reset", True, (247, 213, 109))
-        controls = self.small_font.render("Arrows move, Space jumps, Shift runs", True, (201, 231, 255))
+        controls = self.small_font.render("Arrows move, Space jumps, Shift runs, F10/O overlay", True, (201, 231, 255))
         self.screen.blit(score_label, (42, 34))
         self.screen.blit(best_label, (42, 68))
         self.screen.blit(controls, (42, 88))
 
-        badge = self.small_font.render(f"pygame window mode  |  {'audio on' if HAS_AUDIO else 'audio off'}", True, (216, 239, 255))
+        mode_label = "overlay mode" if self.overlay_mode else "window mode"
+        badge = self.small_font.render(
+            f"pygame {mode_label}  |  Ctrl+Alt+O  |  {'audio on' if HAS_AUDIO else 'audio off'}",
+            True,
+            (216, 239, 255),
+        )
         pygame.draw.rect(self.screen, (22, 35, 53), (WINDOW_W - 294, 24, 270, 40), border_radius=10)
         self.screen.blit(badge, (WINDOW_W - 278, 36))
+        integration = self.small_font.render(self.integration_status, True, (255, 241, 171))
+        detail = self.small_font.render(self.integration_detail[:44], True, (201, 231, 255))
+        self.screen.blit(integration, (WINDOW_W - 278, 78))
+        self.screen.blit(detail, (WINDOW_W - 278, 96))
 
         if self.message_ticks > 0:
             text = self.big_font.render(self.message, True, (255, 255, 255))

@@ -1,13 +1,16 @@
 # Desktop Mario for MacBook
 
-This repo is a macOS-first recreation of the idea behind [`bxf1001g/desktop_mario`](https://github.com/bxf1001g/desktop_mario): a Mario-style mini-game for Mac that now runs as a visible native desktop window.
+This repo is a macOS-first recreation of the idea behind [`bxf1001g/desktop_mario`](https://github.com/bxf1001g/desktop_mario): a Mario-style mini-game for Mac with a working desktop-style overlay mode, global hotkey, and native menu-bar control.
 
 ## What this version includes
 
 - Smoother movement with coyote time, jump buffering, enemy stomps, particles, and win flow
 - Generated retro visuals for the player, enemies, coins, terrain, and UI
 - Retro synthesized sound effects for jumping, coins, stomps, getting hit, and finishing the run
-- `pygame`-based macOS window that is confirmed working locally
+- `pygame`-based macOS renderer that is confirmed working locally
+- Borderless bottom-docked overlay mode
+- Global `Ctrl+Alt+O` overlay toggle
+- Native macOS menu-bar item (`M`) for overlay, opacity, reset, focus, and quit
 - PyInstaller spec and build script for packaging into a `.app`
 
 ## Requirements
@@ -45,19 +48,27 @@ Inside the bundle build output, PyInstaller also creates the supporting onedir a
 - `Space` / `Up`: Jump
 - `Shift`: Run
 - `R`: Reset run
-- `Esc`: Quit
+- `O` or `F10`: Toggle overlay mode
+- `P` or `F11`: Cycle overlay opacity
+- `Ctrl+Alt+O`: Global overlay toggle
+- `Ctrl+Alt+P`: Global opacity cycle
+- `Esc`: Quit or exit overlay mode
 
 ## Test Flow
 
 1. Run `python3 desktop_mario_mac.py`
 2. Verify the game window appears immediately
 3. Test movement, jumping, coin collection, enemy stomps, reset, and sound playback
-4. Build the app with `./scripts/build_app.sh`
-5. Re-test the same flow using `dist/Desktop Mario Mac.app`
+4. Toggle overlay mode with `O` and verify the app becomes borderless and bottom-docked
+5. Use `P` to cycle overlay opacity
+6. Verify the native menu-bar item `M` appears and can toggle overlay/focus/reset/quit
+7. Test `Ctrl+Alt+O` as a global hotkey
+8. Build the app with `./scripts/build_app.sh`
+9. Re-test the same flow using `dist/Desktop Mario Mac.app`
 
 ## Notes
 
 - This is a Mac adaptation, not a byte-for-byte port of the Windows implementation.
-- The current version uses a `pygame` window because that proved reliable on your Mac, unlike the earlier Tk overlay path.
+- The current version uses a `pygame` renderer because that proved reliable on your Mac, unlike the earlier Tk overlay path.
 - Sound is generated locally in code, so there are no external audio assets to manage yet.
-- If you want a closer visual match to the original project next, we can swap in sprite sheets, add music, and then revisit a more desktop-like always-on-top presentation.
+- If you want a closer visual match to the original project next, we can swap in sprite sheets, add music, and further polish the overlay behavior.
