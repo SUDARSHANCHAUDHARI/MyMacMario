@@ -1,0 +1,141 @@
+# Build, notarize, package, and publish a release DMG on every v* git tag.
+#
+# Required repository secrets (Settings -> Secrets -> Actions):
+#   APPLE_DEVELOPER_CERT_P12    - base64-encoded Developer ID Application .p12
+#   APPLE_CERT_PASSWORD         - password for the .p12
+#   APPLE_ID                    - your Apple ID email
+#   APPLE_TEAM_ID               - your 10-char Team ID
+#   APPLE_APP_SPECIFIC_PASSWORD - app-specific password for notarytool
+#
+# Trigger: push a semver tag
+#   git tag v1.0.0 && git push origin v1.0.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+
+    env:
+      APP_NAME: "Desktop Mario Mac"
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. Checkout
+      # ----------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------
+      # 2. Python + dependencies
+      # ----------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      # ----------------------------------------------------------------
+      # 3. Import Developer ID certificate into a temporary keychain
+      # ----------------------------------------------------------------
+      - name: Import signing certificate
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEVELOPER_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          KEYCHAIN_PASS="ci-$(openssl rand -hex 8)"
+          P12_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$P12_BASE64" | base64 --decode > "$P12_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user \
+            -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          rm -f "$P12_PATH"
+
+      # ----------------------------------------------------------------
+      # 4. Store notarytool credentials in Keychain
+      # ----------------------------------------------------------------
+      - name: Store notarytool credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "notarytool-password" \
+            --apple-id   "$APPLE_ID" \
+            --team-id    "$TEAM_ID" \
+            --password   "$APP_PASSWORD"
+
+      # ----------------------------------------------------------------
+      # 5. Build .app with PyInstaller
+      # ----------------------------------------------------------------
+      - name: Build .app
+        run: |
+          chmod +x scripts/build_app.sh
+          ./scripts/build_app.sh
+
+      # ----------------------------------------------------------------
+      # 6. Codesign + notarize + staple
+      # ----------------------------------------------------------------
+      - name: Codesign, notarize and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          chmod +x scripts/notarize.sh
+          ./scripts/notarize.sh
+
+      # ----------------------------------------------------------------
+      # 7. Package into DMG
+      # ----------------------------------------------------------------
+      - name: Build DMG
+        run: |
+          chmod +x scripts/build_dmg.sh
+          ./scripts/build_dmg.sh
+
+      # ----------------------------------------------------------------
+      # 8. Create GitHub Release and attach the DMG
+      # ----------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Desktop Mario Mac"
+          body: |
+            ## Install
+            1. Download `Desktop Mario Mac.dmg` below
+            2. Open the DMG and drag the app to **Applications**
+            3. Launch — macOS Gatekeeper verifies the notarization automatically
+
+            No Python installation required. The app is self-contained.
+          files: "dist/Desktop Mario Mac.dmg"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ----------------------------------------------------------------
+      # 9. Clean up temporary keychain
+      # ----------------------------------------------------------------
+      - name: Clean up keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
