@@ -1,6 +1,19 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.key
+secrets.json
+
 .venv/
 __pycache__/
 .DS_Store
 build/
 dist/
 PLAN.md
+
+# Claude Code
+.claude/
+
+# graphify knowledge graph
+graphify-out/
