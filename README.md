@@ -72,3 +72,11 @@ Inside the bundle build output, PyInstaller also creates the supporting onedir a
 - The current version uses a `pygame` renderer because that proved reliable on your Mac, unlike the earlier Tk overlay path.
 - Sound is generated locally in code, so there are no external audio assets to manage yet.
 - If you want a closer visual match to the original project next, we can swap in sprite sheets, add music, and further polish the overlay behavior.
+
+## Author
+
+Built by **Sudarshan Chaudhari** — SudarshanTechLabs.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
